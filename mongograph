@@ -1,0 +1,161 @@
+#!/bin/bash
+# What pretty output from such a disgusting hack.  :)
+read rows cols <<<"$(stty size)"
+mongostat "$@" \
+| sed -u -e 's, time $,,' -e 's, [0-9][0-9]:[0-9][0-9]:[0-9][0-9] $,,' -e 's,[:|], ,g' -e 's,\<command\>,& cmd_repl,' -e 's,locked db,locked_db lock%,' -e 's,idx miss %,idx_miss_%,' \
+| gawk -v rows="$rows" -v cols="$cols" '
+BEGIN {
+	ticks[0]="▁";
+	ticks[1]="▂";
+	ticks[2]="▃";
+	ticks[3]="▄";
+	ticks[4]="▅";
+	ticks[5]="▆";
+	ticks[6]="▇";
+	ticks[7]="█"; 
+	ticks[8]=".";
+	ticks[9]=" ";
+	t = 0;
+	printf("%c[2J",27);
+}
+
+function goto(t, i) {
+	printf("%c[%d;%dH",27,i,t);
+}
+
+function showlabel(t, i,		vv, mm) {
+	if (label[i] == "locked_db") {
+		# hooray for special cases
+		printf(sprintf("%%s%%%ds %%%ds ", maxlabellen, 2 * maxmax + 1), goto(1,i), label[i], v[t, i]);
+	} else {
+		vv = v[t, i] + 0.0;
+		if (vv >= 1000000000) {
+			vv = sprintf("%4.1fg", vv / 1000000000);
+		} else if (vv >= 1000000) {
+			vv = sprintf("%4.1fm", vv / 1000000);
+		} else if (vv >= 100000) {
+			vv = sprintf("%4.1fk", vv / 1000);
+		}
+		mm = max[i] + 0.0;
+		if (mm >= 1000000000) {
+			mm = sprintf("%4.1fg", mm / 1000000000);
+		} else if (mm >= 1000000) {
+			mm = sprintf("%4.1fm", mm / 1000000);
+		} else if (mm >= 100000) {
+			mm = sprintf("%4.1fk", mm / 1000);
+		}
+		if (mm == "") {
+			mm = "0";
+		}
+		#maxmax = length(max[i]);  # FIXME
+		maxmax = 6;
+		printf(sprintf("%%s%%%ds %%%ds/%%%ds ", maxlabellen, maxmax, maxmax), goto(1,i), label[i], vv, mm);
+	}
+}
+
+function gettick(t, i) {
+	if (v[t,i] == "" || v[t,i] == " ") {
+		return 9;
+	} else if (v[t,i] == ".") {
+		return 8;
+	} else if (int(max[i]) == 0) {
+		return 0;
+	} else {
+		return int(7 * v[t,i] / max[i] + 0.5);
+	}
+}
+
+NR > 1 {
+	numfields = NF;
+	if (numfields > rows) {
+		numfields = rows;
+	}
+	error = 0;
+	if ($0 ~ "^[^ ]") {
+		# not a data line
+		if ($0 ~ "^insert") {
+			# label line
+			maxlabellen = 0;
+			for (i = 1; i <= numfields; i++) {
+				if ( ! (i in label)) {
+					for (tt = 0; tt <= cols; tt++) {
+						v[tt,i] = " ";
+					}
+				}
+				label[i] = $i;
+				if (maxlabellen < length(label[i])) {
+					maxlabellen = length(label[i]);
+				}
+				if (label[i] ~ "%$") {
+					max[i] = 105;  # sometimes things can be a bit over 100, i assume just due to slight accounting/timing snafus
+				}
+			}
+			for (i = 1; i <= numfields; i++) {
+				showlabel(t, i);
+			}
+			next;
+		} else if ($0 ~ "transport error" || $0 ~ "CONNECT_ERROR") {
+			# Error line(s)
+			error = 1;
+		} else {
+			# other/misc error line - ignore
+			next;
+		}
+	}
+	if (error) {
+		numfields = prev_numfields;
+	}
+	for (i = 1; i <= numfields; i++) {
+		updateall = 0;
+		if (error) {
+			v[t,i] = ".";
+		} else {
+			val = $i;
+			val = gensub("^\\*", "", "", val);
+			if (val ~ "g$") {
+				val = int(gensub("g$", "", "", val)) * 1000000000;
+			} else if (val ~ "m$") {
+				val = int(gensub("m$", "", "", val)) * 1000000;
+			} else if (val ~ "k$") {
+				val = int(gensub("k$", "", "", val)) * 1000;
+			} else if (val ~ "b$") {
+				val = gensub("b$", "", "", val) + 0;
+			}
+			if (val ~ "\\%$") {
+				val = gensub("\\%$", "", "", val);
+				max[i] = 105.0;  # sometimes things can be a bit over 100, i assume just due to slight accounting/timing snafus
+			} else {
+				if (val > max[i] || ! (i in max)) {
+					max[i] = val;
+					updateall = 1;
+				}
+			}
+			v[t,i] = val;
+		}
+
+		graphstart = maxlabellen + 2 + maxmax * 2 + 2;
+		#graphwidth = 60;
+		graphwidth = cols - graphstart;
+
+		showlabel(t, i);
+		if (updateall) {
+			s = "";
+			for (tt = 0; tt <= graphwidth; tt++) {
+				s = s ticks[gettick(tt,i)];
+			}
+			printf("%s%s", goto(graphstart,i), s);
+		} else {
+			printf("%s%s %c[D", goto(graphstart + t,i), ticks[gettick(t,i)], 27);
+		}
+	}
+	t++;
+	if (t > graphwidth) {
+		t = 0;
+	}
+	prev_numfields = numfields;
+	fflush();
+
+	#framenum++;
+	#system(sprintf("import -window $WINDOWID mongograph-%05d.png", framenum));
+}
+'
