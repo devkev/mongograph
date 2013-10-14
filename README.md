@@ -35,6 +35,13 @@ Usage
     $ mongograph [mongostat options...]
 
 
+Screenshot/demo
+===============
+
+[Video demo](http://www.youtube.com/watch?v=qfWHQGANrEc)
+![Screenshot](mongograph1.png)
+
+
 Bugs
 ====
 
